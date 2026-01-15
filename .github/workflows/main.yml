@@ -1,0 +1,216 @@
+name: MiHoYo Auto Check-in
+
+on:
+  schedule:
+    # 每天 UTC 时间 23:20 运行（北京时间 7:20）
+    - cron: '20 23 * * *'
+  workflow_dispatch: # 允许手动触发
+  push: # 当有代码推送时也运行（方便测试）
+    branches: [ main ]
+
+jobs:
+  check-in:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: 1. 下载代码
+        uses: actions/checkout@v3
+
+      - name: 2. 设置 Python 环境
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: 3. 安装所需软件包
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
+
+      - name: 4. 创建签到脚本
+        run: |
+          cat > checkin.py << 'EOF'
+          #!/usr/bin/env python3
+          # -*- coding: utf-8 -*-
+          
+          import os
+          import sys
+          import json
+          import time
+          import requests
+          from datetime import datetime
+          
+          # 用户代理，模拟浏览器
+          HEADERS = {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+              'Accept': 'application/json, text/plain, */*',
+              'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+              'Content-Type': 'application/json;charset=UTF-8',
+              'Origin': 'https://webstatic.mihoyo.com',
+              'Referer': 'https://webstatic.mihoyo.com/'
+          }
+          
+          def log_print(message):
+              """打印带时间的日志"""
+              current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+              print(f"[{current_time}] {message}")
+              sys.stdout.flush()
+          
+          def check_mihoyo_cookie(cookie):
+              """检查米游社Cookie是否有效"""
+              url = "https://api-takumi.mihoyo.com/binding/api/getUserGameRolesByCookie"
+              headers = HEADERS.copy()
+              headers['Cookie'] = cookie
+              
+              try:
+                  response = requests.get(url, headers=headers, timeout=15)
+                  if response.status_code == 200:
+                      data = response.json()
+                      if data.get('retcode') == 0:
+                          roles = data.get('data', {}).get('list', [])
+                          return True, roles
+                  return False, []
+              except Exception as e:
+                  log_print(f"检查Cookie失败: {str(e)}")
+                  return False, []
+          
+          def genshin_sign_in(token, uid="", region="cn_gf01"):
+              """原神签到"""
+              url = "https://sg-hk4e-api.hoyolab.com/event/sol/sign"
+              headers = HEADERS.copy()
+              
+              # 构建cookie
+              cookie_str = f"ltoken={token}; ltuid={uid}" if uid else f"ltoken={token}"
+              headers['Cookie'] = cookie_str
+              
+              params = {
+                  'act_id': 'e202102251931481',
+                  'lang': 'zh-cn'
+              }
+              
+              try:
+                  response = requests.post(url, headers=headers, params=params, timeout=15)
+                  if response.status_code == 200:
+                      data = response.json()
+                      message = data.get('message', '未知状态')
+                      retcode = data.get('retcode', -1)
+                      
+                      if retcode == 0:
+                          log_print(f"✅ 原神签到成功: {message}")
+                      else:
+                          log_print(f"⚠️ 原神签到: {message} (retcode: {retcode})")
+                      return data
+                  else:
+                      log_print(f"❌ 原神签到失败: HTTP {response.status_code}")
+                      return None
+              except Exception as e:
+                  log_print(f"❌ 原神签到异常: {str(e)}")
+                  return None
+          
+          def starrail_sign_in(token, uid="", region="prod_gf_cn"):
+              """崩坏：星穹铁道签到"""
+              url = "https://sg-public-api.hoyolab.com/event/luna/os/sign"
+              headers = HEADERS.copy()
+              
+              # 构建cookie
+              cookie_str = f"ltoken={token}; ltuid={uid}" if uid else f"ltoken={token}"
+              headers['Cookie'] = cookie_str
+              
+              json_data = {
+                  'act_id': 'e202303301540311',
+                  'lang': 'zh-cn',
+                  'uid': uid,
+                  'region': region
+              }
+              
+              try:
+                  response = requests.post(url, headers=headers, json=json_data, timeout=15)
+                  if response.status_code == 200:
+                      data = response.json()
+                      message = data.get('message', '未知状态')
+                      retcode = data.get('retcode', -1)
+                      
+                      if retcode == 0:
+                          log_print(f"✅ 星穹铁道签到成功: {message}")
+                      else:
+                          log_print(f"⚠️ 星穹铁道签到: {message} (retcode: {retcode})")
+                      return data
+                  else:
+                      log_print(f"❌ 星穹铁道签到失败: HTTP {response.status_code}")
+                      return None
+              except Exception as e:
+                  log_print(f"❌ 星穹铁道签到异常: {str(e)}")
+                  return None
+          
+          def main():
+              log_print("🎮 开始米哈游自动签到任务")
+              log_print("=" * 50)
+              
+              # 1. 米游社Cookie签到
+              mys_cookies = os.getenv('MYS_COOKIES', '')
+              if mys_cookies:
+                  cookies = [c.strip() for c in mys_cookies.split(',') if c.strip()]
+                  log_print(f"📱 找到 {len(cookies)} 个米游社账号")
+                  
+                  for idx, cookie in enumerate(cookies, 1):
+                      log_print(f"🔍 检查第 {idx} 个米游社账号...")
+                      valid, roles = check_mihoyo_cookie(cookie)
+                      if valid:
+                          log_print(f"   ✅ 账号有效，有 {len(roles)} 个游戏角色")
+                          for role in roles:
+                              game_name = role.get('game_biz', '')
+                              role_name = role.get('nickname', '未知')
+                              log_print(f"   🎮 {game_name}: {role_name}")
+                      else:
+                          log_print("   ❌ Cookie无效或已过期")
+                      time.sleep(1)
+              else:
+                  log_print("📱 未配置米游社Cookie")
+              
+              log_print("-" * 50)
+              
+              # 2. 原神签到
+              genshin_tokens = os.getenv('GENSHIN_TOKENS', '')
+              if genshin_tokens:
+                  tokens = [t.strip() for t in genshin_tokens.split(',') if t.strip()]
+                  log_print(f"🌍 找到 {len(tokens)} 个原神账号")
+                  
+                  for idx, token in enumerate(tokens, 1):
+                      log_print(f"🔄 开始第 {idx} 个原神账号签到...")
+                      genshin_sign_in(token)
+                      if idx < len(tokens):  # 不是最后一个就等待
+                          time.sleep(3)
+              else:
+                  log_print("🌍 未配置原神Token")
+              
+              log_print("-" * 50)
+              
+              # 3. 星穹铁道签到
+              starrail_tokens = os.getenv('STARRAIL_TOKENS', '')
+              if starrail_tokens:
+                  tokens = [t.strip() for t in starrail_tokens.split(',') if t.strip()]
+                  log_print(f"🚀 找到 {len(tokens)} 个星穹铁道账号")
+                  
+                  for idx, token in enumerate(tokens, 1):
+                      log_print(f"🔄 开始第 {idx} 个星穹铁道账号签到...")
+                      starrail_sign_in(token)
+                      if idx < len(tokens):  # 不是最后一个就等待
+                          time.sleep(3)
+              else:
+                  log_print("🚀 未配置星穹铁道Token")
+              
+              log_print("=" * 50)
+              log_print("🎉 所有签到任务执行完毕！")
+          
+          if __name__ == '__main__':
+              main()
+          EOF
+
+      - name: 5. 运行签到脚本
+        env:
+          MYS_COOKIES: ${{ secrets.MYS_COOKIES }}
+          GENSHIN_TOKENS: ${{ secrets.GENSHIN_TOKENS }}
+          STARRAIL_TOKENS: ${{ secrets.STARRAIL_TOKENS }}
+        run: python checkin.py
+
+      - name: 6. 完成提示
+        run: echo "✅ 签到任务已完成！下次运行时间：北京时间 7:20"
